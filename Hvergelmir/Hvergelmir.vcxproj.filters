@@ -1,0 +1,71 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClInclude Include="Hvergelmir.h" />
+    <ClInclude Include="config.h" />
+    <ClInclude Include="ioRingManager.h">
+      <Filter>IORingManager</Filter>
+    </ClInclude>
+    <ClInclude Include="includes.h">
+      <Filter>Extra</Filter>
+    </ClInclude>
+    <ClInclude Include="threadNameManager.h">
+      <Filter>ThreadNameManager</Filter>
+    </ClInclude>
+    <ClInclude Include="poolObjects.h">
+      <Filter>Extra</Filter>
+    </ClInclude>
+    <ClInclude Include="functions.h">
+      <Filter>Extra</Filter>
+    </ClInclude>
+    <ClInclude Include="memoryBroker.h">
+      <Filter>MemoryBroker</Filter>
+    </ClInclude>
+    <ClInclude Include="pipeManager.h">
+      <Filter>PipeManager</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="PipeManager">
+      <UniqueIdentifier>{74783ddb-80e0-4b06-b261-7a8dc908e40b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ThreadNameManager">
+      <UniqueIdentifier>{8b0d4e9d-997c-470f-8137-aa44265b314e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="IORingManager">
+      <UniqueIdentifier>{27ac3fad-9eb9-4ee7-8021-7c1fbbdb9e26}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Extra">
+      <UniqueIdentifier>{27f48a0f-0e37-48a4-9087-636e48f8bb60}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Test">
+      <UniqueIdentifier>{b1551d18-acf1-4514-9282-b6e4c827fcc3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="MemoryBroker">
+      <UniqueIdentifier>{d89beea3-a936-4ffa-bef6-50de56233487}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="ioRingManager.cpp">
+      <Filter>IORingManager</Filter>
+    </ClCompile>
+    <ClCompile Include="threadNameManager.cpp">
+      <Filter>ThreadNameManager</Filter>
+    </ClCompile>
+    <ClCompile Include="HvergelmirHelpers.cpp" />
+    <ClCompile Include="HvergelmirExploit.cpp" />
+    <ClCompile Include="memoryBroker.cpp">
+      <Filter>MemoryBroker</Filter>
+    </ClCompile>
+    <ClCompile Include="test.cpp">
+      <Filter>Test</Filter>
+    </ClCompile>
+    <ClCompile Include="Hvergelmir.cpp" />
+    <ClCompile Include="pipeManager.cpp">
+      <Filter>PipeManager</Filter>
+    </ClCompile>
+    <ClCompile Include="memoryBrokerProcedure.cpp">
+      <Filter>MemoryBroker</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>

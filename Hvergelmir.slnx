@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="Hvergelmir/Hvergelmir.vcxproj" Id="c851f7db-3446-496b-a90a-ddd25e413ed7" />
+</Solution>

@@ -4,11 +4,17 @@
 #include "poolObjects.h"
 #include "threadNameManager.h"
 #include "pipeManager.h"
+#include "Hvergelmir.h"
 
 // Compile-time layout checks (static asserts) for poolObjects.h
 
 int main() {
-    std::cout << "Compile-time layout checks passed.\n";
+
+    Hvergelmir::getInstance().SetOverflowFunctions(nullptr, nullptr, nullptr); // ensure static initialization runs
+	Hvergelmir::getInstance().VerifySystem(); // ensure static initialization runs
+
+
+
 
     // Basic runtime smoke checks
     ThreadNameManager tnm;

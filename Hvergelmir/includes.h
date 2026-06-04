@@ -9,6 +9,8 @@
 #include <vector>
 #include <algorithm>
 #include <ntstatus.h>
+#include "config.h"
+
 
 
 #ifdef DEBUG

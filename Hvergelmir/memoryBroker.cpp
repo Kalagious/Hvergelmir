@@ -56,7 +56,18 @@ bool MemoryBroker::EnumVersion()
     return true;
 }
 
-
+// Simple helper to scan a buffer for an ASCII tag and return offsets
+std::vector<UINT64> MemoryBroker::ScanForPoolTag(const BYTE* data, size_t size, const char* tag)
+{
+	std::vector<UINT64> offsets;
+	if (!data || !tag) return offsets;
+	size_t tagLen = strlen(tag);
+	if (tagLen == 0 || size < tagLen) return offsets;
+	for (size_t i = 0; i + tagLen <= size; ++i) {
+		if (memcmp(data + i, tag, tagLen) == 0) offsets.push_back((UINT64)i);
+	}
+	return offsets;
+}
 
 MemoryBroker::MemoryBroker()
 {

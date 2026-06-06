@@ -1,6 +1,7 @@
 #pragma once
 #include "includes.h"
 
+void HexDumpLittleEndian(void* memoryAddress, size_t sizeInBytes);
 
 typedef NTSTATUS(*MYPROC) (HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
 typedef NTSTATUS(WINAPI* RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);

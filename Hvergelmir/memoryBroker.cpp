@@ -69,6 +69,9 @@ std::vector<UINT64> MemoryBroker::ScanForPoolTag(const BYTE* data, size_t size, 
 	return offsets;
 }
 
+
+
+
 MemoryBroker::MemoryBroker()
 {
     tmpData = new BYTE[0x500];
@@ -80,6 +83,10 @@ MemoryBroker::MemoryBroker()
 	EPROCESS = 0;
 	readEnabled = false;
 	writeEnabled = false;
+
+	nameManager = std::weak_ptr<ThreadNameManager>();
+	ioRingManager = std::weak_ptr<IORingManager>();
+	pipeManager = std::weak_ptr<PipeManager>();
 
 	HMODULE ntdll = GetModuleHandleA("ntdll.dll");
 	_NtFsControlFile = nullptr;
@@ -221,7 +228,13 @@ void MemoryBroker::Write(BYTE* iDestinationAddr, UINT64 data, UINT64 size)
 	irm->TriggerCorruptRing(data, size);
 }
 
-
+UINT64 MemoryBroker::GetEPROCESS()
+{
+	if (EPROCESS == 0) {
+		DEBUG_PRINT(" [!] EPROCESS not found yet\n");
+	}
+	return EPROCESS;
+}
 
 UINT64 MemoryBroker::HandleToPointer(HANDLE iHandle)
 {
@@ -309,3 +322,26 @@ void MemoryBroker::InvokePassOverflow()
 	}
 }
 
+void HexDumpLittleEndian(void* memoryAddress, size_t sizeInBytes) {
+	uint64_t* qwordPointer = (uint64_t*)memoryAddress;
+	size_t totalQwords = sizeInBytes / 8;
+
+
+	// Loop through memory, advancing by 2 QWORDs (16 bytes) each time
+	for (size_t i = 0; i < totalQwords; i += 2) {
+
+		// Print the row address
+		printf("    [%p]  ", (void*)(qwordPointer + i));
+
+		// Print the first QWORD
+		printf("%016llX  ", qwordPointer[i]);
+
+		// Print the second QWORD if it exists
+		if (i + 1 < totalQwords) {
+			printf("%016llX", qwordPointer[i + 1]);
+		}
+
+		printf("\n");
+	}
+
+}

@@ -34,12 +34,12 @@ struct NP_DATA_QUEUE_ENTRY {
 
 struct LFH_POOL_HEADER
 {
-    BYTE previousSize;        // +0x00
-	BYTE poolIndex;           // +0x01
-	BYTE blockSize;           // +0x02
-	BYTE poolType;            // +0x03
-	UINT32 poolTag;           // +0x04
-	UINT64 poolQuota;         // +0x08
+    BYTE previousSize = 0x00;        // +0x00
+	BYTE poolIndex = 0x00;           // +0x01
+	BYTE blockSize = 0x00;           // +0x02
+	BYTE poolType = 0x00;            // +0x03
+	UINT32 poolTag = 0x00000000;           // +0x04
+	UINT64 poolQuota = 0x0000000000000000;        // +0x08
 };
 
 struct LFH_NP_DATA_QUEUE_ENTRY {

@@ -3,6 +3,8 @@
 #include "functions.h"
 #include "poolObjects.h"
 #include <memory>
+#include <optional>
+#include <vector>
 
 
 
@@ -21,6 +23,9 @@ private:
 	UINT64 HANDLE_TABLE;
 	UINT64 TABLE_CODE;
 	UINT64 EPROCESS;
+
+	UINT64 targetRingAddr;
+	UINT64 regBuffersListAddr;
 
 	UINT64 buildNumber = 0;
 	bool readEnabled = false;
@@ -49,10 +54,17 @@ public:
 
 
 
-	bool GetEPROCESS(UINT64 iClientManager);
+	bool FindEPROCESS(UINT64 iClientManager);
+	UINT64 GetEPROCESS();
 
-	bool GetThreadNameLayout();
-	bool GetPipeLayout();
+    struct LeakLayoutResult {
+		std::vector<BYTE> leakedData;
+        UINT64 targetPipeOffset;
+		UINT32 pipeIndex = 0;
+	};
+
+	std::optional<LeakLayoutResult> GetPipeLayout();
+	
 	bool GetIORingLayout();
 
 	bool CorruptThreadName();

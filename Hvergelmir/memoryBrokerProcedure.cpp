@@ -109,7 +109,7 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
         bool needNewLeak = false;
         UINT64 iosbAttempt = 0;
 
-        while (!needNewLeak)
+        while (!needNewLeak || iosbAttempt > MAX_TRIES_PER_LEAK)
         {
             DEBUG_PRINT(
                 " [*] IoSB attempt %llu for capture %llu\n",

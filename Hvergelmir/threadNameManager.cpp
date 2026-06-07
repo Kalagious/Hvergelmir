@@ -283,13 +283,30 @@ void ThreadNameManager::CleanExtraThreads()
 	}
 
 
+	WCHAR emptyName = L'\0';
 	THREAD_NAME_INFORMATION emptyThreadName = { 0 };
+	emptyThreadName.ThreadName.Buffer = &emptyName;
+	emptyThreadName.ThreadName.Length = 0;
+	emptyThreadName.ThreadName.MaximumLength = sizeof(emptyName);
 
-	for (int i = 0; i < threadCount; i += 1) {
-		if (leakThread != threads[i])
-			_NtSetInformationThread(threads[i], ThreadNameInformation, &emptyThreadName, sizeof(emptyThreadName));
+	UINT64 cleared = 0;
+	UINT64 failed = 0;
+
+	for (UINT64 i = 0; i < threadCount; i += 1) {
+		HANDLE thread = threads[i];
+		if (thread == NULL || thread == INVALID_HANDLE_VALUE || thread == leakThread)
+			continue;
+
+		NTSTATUS status = _NtSetInformationThread(thread, ThreadNameInformation, &emptyThreadName, sizeof(emptyThreadName));
+		if (NT_SUCCESS(status))
+			++cleared;
+		else {
+			++failed;
+			DEBUG_PRINT(" [!] Failed to clear thread name at index %llu. Status: 0x%X\n", (unsigned long long)i, status);
+		}
 	}
 
+	DEBUG_PRINT(" [*] Cleaned %llu extra thread names, %llu failed\n", (unsigned long long)cleared, (unsigned long long)failed);
 }
 
 

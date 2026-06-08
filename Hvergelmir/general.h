@@ -60,6 +60,8 @@ public:
 
 	HANDLE sPipe = NULL;
 	HANDLE cPipe = NULL;
+	HANDLE irpReadyEvent = NULL;
+	HANDLE irpFailedEvent = NULL;
 
 	HANDLE driver = NULL;
 

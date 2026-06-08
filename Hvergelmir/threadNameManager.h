@@ -11,6 +11,7 @@ public:
 	HANDLE leakThread;
 
 	UINT64 leakSize;
+	UINT64 leakUseCount;
 
 	pNtSetInformationThread _NtSetInformationThread;
 	pNtQueryInformationThread _NtQueryInformationThread;

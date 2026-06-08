@@ -11,6 +11,8 @@ public:
 	HANDLE leakThread;
 
 	UINT64 leakSize;
+	UINT64 leakReadCount;
+	bool refreshLeak;
 
 	pNtSetInformationThread _NtSetInformationThread;
 	pNtQueryInformationThread _NtQueryInformationThread;
@@ -27,6 +29,8 @@ public:
 	// Compatibility helper that returns a malloc'd buffer (caller must free)
 	BYTE* LeakDataMalloc();
 	HANDLE ScanForCorruptName();
+	bool VerifyLeakThread(HANDLE t);
+	bool ShouldRefreshLeak();
 	void ClearThreads();
 };
 

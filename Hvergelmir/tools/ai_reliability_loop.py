@@ -21,7 +21,7 @@ DEFAULT_MODEL = "gpt-5"
 DEFAULT_HARNESS = Path("tools") / "vbox_hvergelmir_harness.py"
 DEFAULT_LOG_ROOT = Path("tools") / "ai-reliability-runs"
 DEFAULT_PHASE_SECONDS = 600
-TARGET_SUCCESS_RATE = 97.0
+TARGET_SUCCESS_RATE = 100.0
 TARGET_AVERAGE_SECONDS = 2.0
 DEFAULT_CONTEXT_CHARS = 55_000
 DEFAULT_DEPLOY_TO = ""
@@ -36,7 +36,7 @@ Project context:
   3. Makes small source changes based on the data.
   4. Compiles.
   5. Retests.
-  6. Repeats until the exploit is at least 97% reliable and average successful execution time is under 2 seconds.
+  6. Repeats until the exploit is 100% reliable and average successful execution time is under 2 seconds.
 - Each information-gathering phase should run for 10 minutes regardless of reboots.
 - The harness manages the VM through Proxmox at 192.168.68.100 and runs the guest over WinRM.
 - The Proxmox user is root@pam. Password is supplied at runtime through PROXMOX_PASSWORD.

